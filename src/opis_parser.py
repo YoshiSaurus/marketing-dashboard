@@ -1,9 +1,17 @@
-"""OPIS (Oil Price Information Service) fuel pricing data parser."""
+"""OPIS (Oil Price Information Service) fuel pricing data parser.
+
+Row-level extraction preserves semantic ambiguity for:
+- ML model training
+- Audit trails
+- Reprocessing with upgraded parsers
+"""
 
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+
+from .storage import ExtractedRow, RetailRow
 
 
 @dataclass
@@ -418,3 +426,314 @@ class OPISParser:
                     }
 
         return summary
+
+    def extract_rows(self, email_body: str, capture_id: str) -> tuple[list[ExtractedRow], list[RetailRow]]:
+        """
+        Extract all rows from email body with preserved semantics.
+
+        This method extracts every numeric row as a separate fact,
+        preserving semantic ambiguity for later normalization.
+
+        Args:
+            email_body: Raw email body text
+            capture_id: ID linking to the raw capture
+
+        Returns:
+            Tuple of (extracted_rows, retail_rows)
+        """
+        extracted_rows = []
+        retail_rows = []
+        row_index = 0
+
+        # Find all product sections
+        for product_key, pattern in self.PRODUCT_PATTERNS.items():
+            matches = list(re.finditer(pattern, email_body))
+
+            for match in matches:
+                start_pos = match.start()
+
+                # Extract product group name from the header
+                header_match = re.search(r'\*\*(.+?)\*\*', email_body[start_pos:start_pos + 200])
+                product_group = header_match.group(1) if header_match else product_key
+
+                # Find location and timestamp
+                loc_search = email_body[max(0, start_pos - 200):start_pos]
+                location_match = re.search(
+                    r'([A-Z]+(?:\s+[A-Z]+)*,\s*[A-Z]{2})\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+EST)',
+                    loc_search
+                )
+                city = location_match.group(1) if location_match else 'Unknown'
+                snapshot_timestamp = location_match.group(2) if location_match else None
+
+                # Extract RVP
+                rvp_match = re.search(r'(\d+\.\d+)\s*RVP', email_body[start_pos:start_pos + 200])
+                rvp = rvp_match.group(1) if rvp_match else None
+
+                # Find section boundaries
+                end_pos = len(email_body)
+                next_section = re.search(
+                    r'(?:[A-Z]+(?:\s+[A-Z]+)*,\s*[A-Z]{2}\s+\d{4}-\d{2}-\d{2}|\*\*OPIS)',
+                    email_body[match.end():]
+                )
+                if next_section:
+                    end_pos = match.end() + next_section.start()
+
+                section_text = email_body[start_pos:end_pos]
+
+                # Extract each line as a row
+                for line in section_text.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    row = self._parse_row(
+                        line=line,
+                        capture_id=capture_id,
+                        row_index=row_index,
+                        city=city,
+                        product_group=product_group,
+                        rvp=rvp,
+                        snapshot_timestamp=snapshot_timestamp,
+                        product_key=product_key
+                    )
+
+                    if row:
+                        extracted_rows.append(row)
+                        row_index += 1
+
+        # Extract retail prices
+        retail_pattern = r'([A-Z]+(?:\s+[A-Z]+)*,\s*[A-Z]{2})\s*\n\s*(LOW RETAIL\s+[\d.]+)'
+        for match in re.finditer(retail_pattern, email_body):
+            city = match.group(1)
+            start_pos = match.start()
+
+            # Extract section
+            section_end = email_body.find('\n\n', start_pos + 50)
+            if section_end == -1:
+                section_end = start_pos + 300
+            section = email_body[start_pos:section_end]
+
+            # Parse each retail line
+            retail_patterns = [
+                (r'LOW RETAIL\s+([\d.]+)', 'LOW RETAIL'),
+                (r'AVG RETAIL\s+([\d.]+)', 'AVG RETAIL'),
+                (r'LOW RETAIL EX-TAX\s+([\d.]+)', 'LOW RETAIL EX-TAX'),
+                (r'AVG RETAIL EX-TAX\s+([\d.]+)', 'AVG RETAIL EX-TAX'),
+            ]
+
+            for pat, label in retail_patterns:
+                m = re.search(pat, section)
+                if m:
+                    retail_rows.append(RetailRow(
+                        capture_id=capture_id,
+                        city=city,
+                        row_label=label,
+                        price=float(m.group(1)),
+                        raw_row_text=m.group(0)
+                    ))
+
+        return extracted_rows, retail_rows
+
+    def _parse_row(
+        self,
+        line: str,
+        capture_id: str,
+        row_index: int,
+        city: str,
+        product_group: str,
+        rvp: Optional[str],
+        snapshot_timestamp: Optional[str],
+        product_key: str
+    ) -> Optional[ExtractedRow]:
+        """
+        Parse a single line into an ExtractedRow.
+
+        Args:
+            line: Raw line text
+            capture_id: ID linking to raw capture
+            row_index: Position in email
+            city: Location
+            product_group: Product header text
+            rvp: RVP value if present
+            snapshot_timestamp: Timestamp from header
+            product_key: Product type key
+
+        Returns:
+            ExtractedRow or None if not a data row
+        """
+        # Skip header/formatting lines
+        if line.startswith('**') or line.startswith('Terms') or line.startswith('-'):
+            return None
+        if 'Move' in line and 'Date' in line and 'Time' in line:
+            return None
+        if 'Copyright' in line:
+            return None
+
+        # Vendor row pattern
+        vendor_pattern = r'^(Valero|PSX|DKTS|Cenex|XOM|Chevron)\s+([bu])\s+([\w-]+)\s+'
+        vendor_match = re.match(vendor_pattern, line)
+
+        if vendor_match:
+            return self._parse_vendor_row(
+                line, vendor_match, capture_id, row_index, city,
+                product_group, rvp, snapshot_timestamp, product_key
+            )
+
+        # Summary row patterns
+        summary_patterns = [
+            (r'^(LOW RACK)\s+([\d.]+)', 'summary'),
+            (r'^(HIGH RACK)\s+([\d.]+)', 'summary'),
+            (r'^(RACK AVG)\s+([\d.]+)', 'summary'),
+            (r'^(BRD LOW RACK)\s+([\d.]+)', 'summary'),
+            (r'^(BRD HIGH RACK)\s+([\d.]+)', 'summary'),
+            (r'^(BRD RACK AVG)\s+([\d.]+)', 'summary'),
+            (r'^(UBD LOW RACK)\s+([\d.]+)', 'summary'),
+            (r'^(UBD HIGH RACK)\s+([\d.]+)', 'summary'),
+            (r'^(UBD RACK AVG)\s+([\d.]+)', 'summary'),
+            (r'^(CONT AVG-\d{2}/\d{2})\s+([\d.]+)', 'summary'),
+            (r'^(CONT LOW-\d{2}/\d{2})\s+([\d.]+)', 'summary'),
+            (r'^(CONT HIGH-\d{2}/\d{2})\s+([\d.]+)', 'summary'),
+        ]
+
+        for pat, row_type in summary_patterns:
+            m = re.match(pat, line)
+            if m:
+                return self._parse_summary_row(
+                    line, m, capture_id, row_index, city,
+                    product_group, rvp, snapshot_timestamp
+                )
+
+        # Spot price patterns
+        spot_patterns = [
+            (r'^\s*FOB\s+(\w+)\s+([\d.]+)', 'spot'),
+            (r'^OPIS GROUP.*SPOT.*\n\s*FOB\s+(\w+)\s+([\d.]+)', 'spot'),
+        ]
+
+        for pat, row_type in spot_patterns:
+            m = re.search(pat, line)
+            if m:
+                return ExtractedRow(
+                    capture_id=capture_id,
+                    row_index=row_index,
+                    city=city,
+                    product_group=product_group,
+                    rvp=rvp,
+                    row_type='spot',
+                    row_label=f'FOB {m.group(1)}',
+                    price_columns={'spot': float(m.group(2))},
+                    snapshot_timestamp=snapshot_timestamp,
+                    raw_row_text=line
+                )
+
+        return None
+
+    def _parse_vendor_row(
+        self,
+        line: str,
+        match: re.Match,
+        capture_id: str,
+        row_index: int,
+        city: str,
+        product_group: str,
+        rvp: Optional[str],
+        snapshot_timestamp: Optional[str],
+        product_key: str
+    ) -> ExtractedRow:
+        """Parse a vendor price row."""
+        vendor = match.group(1)
+        terms = f"{match.group(2)} {match.group(3)}"
+
+        # Extract all numeric values from the line
+        # Pattern: price, optional move, repeated for multiple columns
+        remaining = line[match.end():]
+
+        # Parse price columns based on product type
+        price_columns = {}
+
+        if product_key in ['conv_clear', 'cbob_ethanol', 'e70']:
+            # Gasoline: Unl, Mid, Pre
+            col_names = ['Unl', 'Mid', 'Pre']
+        elif product_key == 'specialty':
+            col_names = ['Jet', 'Marine']
+        else:
+            # Diesel: No.2, No.1, Pre
+            col_names = ['No2', 'No1', 'Pre']
+
+        # Extract price/move pairs
+        price_pattern = r'([\d.]+)\s+([+-]?\s*[\d.]+)?|--\s+--'
+        price_matches = re.findall(price_pattern, remaining)
+
+        for i, (price, move) in enumerate(price_matches):
+            if price and i < len(col_names):
+                col_name = col_names[i]
+                try:
+                    price_columns[col_name] = float(price)
+                    if move:
+                        move_clean = move.replace(' ', '')
+                        if move_clean:
+                            price_columns[f'{col_name}_move'] = float(move_clean)
+                except ValueError:
+                    pass
+
+        # Extract date/time
+        datetime_match = re.search(r'(\d{2}/\d{2})\s+(\d{2}:\d{2})', line)
+        reported_date = datetime_match.group(1) if datetime_match else None
+        reported_time = datetime_match.group(2) if datetime_match else None
+
+        return ExtractedRow(
+            capture_id=capture_id,
+            row_index=row_index,
+            city=city,
+            product_group=product_group,
+            rvp=rvp,
+            row_type='vendor',
+            row_label=vendor,
+            vendor=vendor,
+            terms=terms,
+            price_columns=price_columns,
+            reported_date=reported_date,
+            reported_time=reported_time,
+            snapshot_timestamp=snapshot_timestamp,
+            raw_row_text=line
+        )
+
+    def _parse_summary_row(
+        self,
+        line: str,
+        match: re.Match,
+        capture_id: str,
+        row_index: int,
+        city: str,
+        product_group: str,
+        rvp: Optional[str],
+        snapshot_timestamp: Optional[str]
+    ) -> ExtractedRow:
+        """Parse a summary row (LOW RACK, RACK AVG, etc.)."""
+        row_label = match.group(1)
+
+        # Extract all prices from the line
+        remaining = line[match.end():]
+        all_prices = re.findall(r'([\d.]+)', match.group(0) + remaining)
+
+        price_columns = {}
+        col_names = ['primary', 'secondary', 'tertiary']
+
+        for i, price in enumerate(all_prices):
+            if i < len(col_names):
+                try:
+                    price_columns[col_names[i]] = float(price)
+                except ValueError:
+                    pass
+
+        return ExtractedRow(
+            capture_id=capture_id,
+            row_index=row_index,
+            city=city,
+            product_group=product_group,
+            rvp=rvp,
+            row_type='summary',
+            row_label=row_label,
+            price_columns=price_columns,
+            snapshot_timestamp=snapshot_timestamp,
+            raw_row_text=line
+        )
