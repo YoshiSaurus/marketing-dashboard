@@ -1,158 +1,209 @@
-"""Cost data processor for analyzing email content and generating trends."""
+"""Cost data processor for analyzing OPIS fuel pricing data and generating trends."""
 
-import re
+import json
+import os
 from datetime import datetime
 from typing import Optional
 
+from .opis_parser import OPISParser, OPISData
 
-class CostProcessor:
-    """Processes cost data from emails and generates trend reports."""
 
-    def __init__(self):
-        """Initialize the cost processor with sample historical data.
+class FuelPriceProcessor:
+    """Processes OPIS fuel pricing data and generates trend analysis."""
 
-        In a production environment, this would connect to a database
-        or data warehouse for historical cost data.
-        """
-        # Sample historical data for demonstration
-        # In production, this would be fetched from a database
-        self._historical_data = {
-            'compute': [1200, 1250, 1180, 1300, 1350],
-            'storage': [450, 460, 455, 470, 480],
-            'network': [320, 310, 340, 335, 350],
-            'database': [890, 900, 920, 910, 930],
-            'other': [150, 155, 160, 158, 165]
-        }
+    # Key products to track for trend analysis
+    KEY_PRODUCTS = [
+        'Conventional Clear Gasoline',
+        'CBOB Ethanol (10%)',
+        'Ultra Low Sulfur Diesel',
+        'ULS Red Dye Diesel',
+    ]
 
-    def parse_cost_email(self, email_body: str) -> dict:
-        """Parse cost data from an email body.
-
-        This method attempts to extract cost figures from the email.
-        It handles various formats that cost reports might use.
+    def __init__(self, history_file: str = 'price_history.json'):
+        """Initialize the fuel price processor.
 
         Args:
-            email_body: The plain text email body
+            history_file: Path to JSON file storing price history
+        """
+        self.parser = OPISParser()
+        self.history_file = history_file
+        self._history = self._load_history()
+
+    def _load_history(self) -> dict:
+        """Load price history from file.
 
         Returns:
-            Dictionary with parsed cost categories and amounts
+            Dictionary of historical prices by location and product
         """
-        costs = {}
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {'prices': {}, 'last_updated': None}
 
-        # Pattern to find cost entries like "Category: $1,234.56" or "Category - $1234"
-        patterns = [
-            r'(\w+(?:\s+\w+)?)\s*[:\-]\s*\$?([\d,]+(?:\.\d{2})?)',
-            r'(\w+(?:\s+\w+)?)\s+cost[s]?\s*[:\-]?\s*\$?([\d,]+(?:\.\d{2})?)',
-        ]
+    def _save_history(self) -> None:
+        """Save price history to file."""
+        try:
+            with open(self.history_file, 'w') as f:
+                json.dump(self._history, f, indent=2)
+        except IOError as e:
+            print(f"Warning: Could not save price history: {e}")
 
-        for pattern in patterns:
-            matches = re.findall(pattern, email_body, re.IGNORECASE)
-            for match in matches:
-                category = match[0].lower().strip()
-                amount_str = match[1].replace(',', '')
-                try:
-                    amount = float(amount_str)
-                    # Map common variations to standard categories
-                    category = self._normalize_category(category)
-                    if category:
-                        costs[category] = costs.get(category, 0) + amount
-                except ValueError:
-                    continue
-
-        # If no costs found, use default/sample data for demo
-        if not costs:
-            costs = self._get_sample_daily_costs()
-
-        return costs
-
-    def _normalize_category(self, category: str) -> Optional[str]:
-        """Normalize category names to standard categories.
+    def parse_opis_email(self, email_body: str) -> OPISData:
+        """Parse OPIS email body into structured data.
 
         Args:
-            category: Raw category name from email
+            email_body: Raw email body text
 
         Returns:
-            Normalized category name or None if not a cost category
+            OPISData object with parsed pricing information
         """
-        category_mapping = {
-            'compute': ['compute', 'ec2', 'instances', 'vm', 'virtual machine', 'server'],
-            'storage': ['storage', 's3', 'ebs', 'disk', 'blob', 'files'],
-            'network': ['network', 'bandwidth', 'data transfer', 'cdn', 'vpc'],
-            'database': ['database', 'rds', 'dynamodb', 'sql', 'cosmos', 'db'],
-            'other': ['other', 'misc', 'miscellaneous', 'additional']
-        }
+        return self.parser.parse(email_body)
 
-        category_lower = category.lower()
-        for standard, variations in category_mapping.items():
-            if any(v in category_lower for v in variations):
-                return standard
-
-        # Skip non-cost related matches
-        skip_words = ['total', 'date', 'report', 'period', 'from', 'to', 'the', 'and']
-        if any(word in category_lower for word in skip_words):
-            return None
-
-        return 'other'
-
-    def _get_sample_daily_costs(self) -> dict:
-        """Get sample daily costs for demonstration.
-
-        Returns:
-            Dictionary of sample cost data
-        """
-        return {
-            'compute': 1380.50,
-            'storage': 485.25,
-            'network': 355.00,
-            'database': 945.75,
-            'other': 170.00
-        }
-
-    def calculate_trends(self, current_costs: dict) -> dict:
-        """Calculate cost trends comparing current to historical data.
+    def get_summary(self, data: OPISData) -> dict:
+        """Get a summary of the parsed OPIS data.
 
         Args:
-            current_costs: Dictionary of current cost amounts by category
+            data: Parsed OPISData object
 
         Returns:
-            Dictionary with trend analysis for each category
+            Summary dictionary with key prices
         """
-        trends = {}
+        return self.parser.get_summary(data)
 
-        for category, current in current_costs.items():
-            historical = self._historical_data.get(category, [])
+    def update_history(self, data: OPISData) -> None:
+        """Update price history with new data.
 
-            if historical:
-                # Calculate average of historical data
-                avg_historical = sum(historical) / len(historical)
-                # Calculate percentage change
-                change = ((current - avg_historical) / avg_historical) * 100 if avg_historical > 0 else 0
-                # Determine trend direction
-                trend_direction = 'increasing' if change > 2 else ('decreasing' if change < -2 else 'stable')
-            else:
-                avg_historical = 0
-                change = 0
-                trend_direction = 'new'
+        Args:
+            data: Parsed OPISData object
+        """
+        summary = self.get_summary(data)
+        date_key = data.report_date or datetime.now().strftime('%Y-%m-%d')
 
-            trends[category] = {
-                'current': current,
-                'historical_avg': avg_historical,
-                'change': round(change, 2),
-                'direction': trend_direction
+        if 'prices' not in self._history:
+            self._history['prices'] = {}
+
+        for location, loc_data in summary.get('locations', {}).items():
+            if location not in self._history['prices']:
+                self._history['prices'][location] = {}
+
+            for product, prices in loc_data.get('products', {}).items():
+                if product not in self._history['prices'][location]:
+                    self._history['prices'][location][product] = []
+
+                # Add new price point
+                self._history['prices'][location][product].append({
+                    'date': date_key,
+                    'rack_avg': prices.get('rack_avg'),
+                    'rack_low': prices.get('rack_low'),
+                    'rack_high': prices.get('rack_high'),
+                    'spot_price': prices.get('spot_price'),
+                })
+
+                # Keep only last 30 days of history
+                self._history['prices'][location][product] = \
+                    self._history['prices'][location][product][-30:]
+
+        self._history['last_updated'] = datetime.now().isoformat()
+        self._save_history()
+
+    def calculate_trends(self, data: OPISData) -> dict:
+        """Calculate price trends comparing current to historical data.
+
+        Args:
+            data: Parsed OPISData object
+
+        Returns:
+            Dictionary with trend analysis by location and product
+        """
+        summary = self.get_summary(data)
+        trends = {
+            'report_date': data.report_date,
+            'locations': {}
+        }
+
+        for location, loc_data in summary.get('locations', {}).items():
+            trends['locations'][location] = {
+                'products': {},
+                'retail': loc_data.get('retail')
             }
 
-        # Calculate total
-        total_current = sum(current_costs.values())
-        total_historical = sum(sum(v) / len(v) for v in self._historical_data.values() if v)
-        total_change = ((total_current - total_historical) / total_historical) * 100 if total_historical > 0 else 0
+            for product, prices in loc_data.get('products', {}).items():
+                current_avg = prices.get('rack_avg')
+                if current_avg is None:
+                    continue
 
-        trends['total'] = {
-            'current': total_current,
-            'historical_avg': total_historical,
-            'change': round(total_change, 2),
-            'direction': 'increasing' if total_change > 2 else ('decreasing' if total_change < -2 else 'stable')
-        }
+                # Get historical data
+                historical = self._get_historical_prices(location, product)
+
+                if historical:
+                    prev_avg = historical[-1].get('rack_avg') if historical else None
+                    week_prices = [h.get('rack_avg') for h in historical[-7:] if h.get('rack_avg')]
+                    week_avg = sum(week_prices) / len(week_prices) if week_prices else None
+
+                    day_change = current_avg - prev_avg if prev_avg else None
+                    day_change_pct = (day_change / prev_avg * 100) if prev_avg and day_change else None
+
+                    week_change = current_avg - week_avg if week_avg else None
+                    week_change_pct = (week_change / week_avg * 100) if week_avg and week_change else None
+                else:
+                    prev_avg = None
+                    week_avg = None
+                    day_change = None
+                    day_change_pct = None
+                    week_change = None
+                    week_change_pct = None
+
+                trends['locations'][location]['products'][product] = {
+                    'current': {
+                        'rack_avg': current_avg,
+                        'rack_low': prices.get('rack_low'),
+                        'rack_high': prices.get('rack_high'),
+                        'spot_price': prices.get('spot_price'),
+                        'branded_avg': prices.get('branded_avg'),
+                        'unbranded_avg': prices.get('unbranded_avg'),
+                    },
+                    'previous_day': prev_avg,
+                    'week_avg': week_avg,
+                    'day_change': round(day_change, 2) if day_change else None,
+                    'day_change_pct': round(day_change_pct, 2) if day_change_pct else None,
+                    'week_change': round(week_change, 2) if week_change else None,
+                    'week_change_pct': round(week_change_pct, 2) if week_change_pct else None,
+                    'direction': self._get_direction(day_change_pct),
+                }
 
         return trends
+
+    def _get_historical_prices(self, location: str, product: str) -> list:
+        """Get historical prices for a location/product.
+
+        Args:
+            location: Location name
+            product: Product name
+
+        Returns:
+            List of historical price dictionaries
+        """
+        return self._history.get('prices', {}).get(location, {}).get(product, [])
+
+    def _get_direction(self, change_pct: Optional[float]) -> str:
+        """Determine trend direction from percentage change.
+
+        Args:
+            change_pct: Percentage change value
+
+        Returns:
+            Direction string: 'up', 'down', or 'stable'
+        """
+        if change_pct is None:
+            return 'new'
+        if change_pct > 0.5:
+            return 'up'
+        if change_pct < -0.5:
+            return 'down'
+        return 'stable'
 
     def generate_trend_report(self, trends: dict) -> str:
         """Generate a human-readable trend report for email reply.
@@ -163,65 +214,96 @@ class CostProcessor:
         Returns:
             Formatted string report suitable for email
         """
-        today = datetime.now().strftime('%B %d, %Y')
+        report_date = trends.get('report_date', datetime.now().strftime('%Y-%m-%d'))
 
-        report_lines = [
-            f"Cost Trends Report - {today}",
-            "=" * 50,
+        lines = [
+            f"OPIS Fuel Price Trends Report - {report_date}",
+            "=" * 60,
             "",
-            "Dear Customer,",
-            "",
-            "Thank you for sending your cost data. Here is the analysis of today's costs compared to recent trends:",
-            "",
-            "COST BREAKDOWN BY CATEGORY",
-            "-" * 30,
         ]
 
-        # Add each category (excluding total)
-        for category, data in sorted(trends.items()):
-            if category == 'total':
-                continue
+        for location, loc_data in trends.get('locations', {}).items():
+            lines.extend([
+                f"Location: {location}",
+                "-" * 60,
+                "",
+            ])
 
-            direction_emoji = {
-                'increasing': '(UP)',
-                'decreasing': '(DOWN)',
-                'stable': '(STABLE)',
-                'new': '(NEW)'
-            }
+            # Product prices table header
+            lines.append(f"{'Product':<35} {'Rack Avg':>10} {'Change':>10} {'%':>8}")
+            lines.append("-" * 65)
 
-            report_lines.append(
-                f"  {category.title():12} ${data['current']:>10,.2f}  "
-                f"{data['change']:>+6.1f}%  {direction_emoji.get(data['direction'], '')}"
-            )
+            products = loc_data.get('products', {})
+            for product_name in self.KEY_PRODUCTS:
+                if product_name in products:
+                    product = products[product_name]
+                    current = product['current']
+                    rack_avg = current.get('rack_avg', 0)
+                    day_change = product.get('day_change')
+                    day_pct = product.get('day_change_pct')
 
-        # Add total
-        total = trends.get('total', {})
-        report_lines.extend([
-            "-" * 30,
-            f"  {'TOTAL':12} ${total.get('current', 0):>10,.2f}  "
-            f"{total.get('change', 0):>+6.1f}%",
-            "",
-            "TREND ANALYSIS",
-            "-" * 30,
-        ])
+                    change_str = f"{day_change:+.2f}" if day_change is not None else "N/A"
+                    pct_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
+
+                    direction = product.get('direction', 'new')
+                    indicator = {'up': '(UP)', 'down': '(DOWN)', 'stable': '(--)', 'new': '(NEW)'}
+
+                    lines.append(
+                        f"{product_name:<35} {rack_avg:>10.2f} {change_str:>10} {pct_str:>8} {indicator.get(direction, '')}"
+                    )
+
+            # Add other products
+            for product_name, product in products.items():
+                if product_name not in self.KEY_PRODUCTS:
+                    current = product['current']
+                    rack_avg = current.get('rack_avg', 0)
+                    if rack_avg:
+                        day_change = product.get('day_change')
+                        day_pct = product.get('day_change_pct')
+                        change_str = f"{day_change:+.2f}" if day_change is not None else "N/A"
+                        pct_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
+                        lines.append(
+                            f"{product_name:<35} {rack_avg:>10.2f} {change_str:>10} {pct_str:>8}"
+                        )
+
+            lines.append("")
+
+            # Retail prices if available
+            retail = loc_data.get('retail')
+            if retail:
+                lines.extend([
+                    "Retail Prices:",
+                    f"  Average Retail: {retail.get('avg_retail', 'N/A')} cpg",
+                    f"  Low Retail: {retail.get('low_retail', 'N/A')} cpg",
+                    f"  Average Ex-Tax: {retail.get('avg_ex_tax', 'N/A')} cpg",
+                    "",
+                ])
+
+            lines.append("")
 
         # Add insights
+        lines.extend([
+            "MARKET INSIGHTS",
+            "-" * 40,
+        ])
         insights = self._generate_insights(trends)
         for insight in insights:
-            report_lines.append(f"  - {insight}")
+            lines.append(f"  * {insight}")
 
-        report_lines.extend([
+        lines.extend([
             "",
-            "If you have any questions about this report, please don't hesitate to reach out.",
+            "-" * 60,
+            "This report was automatically generated from OPIS pricing data.",
+            "Prices shown in cents per gallon (cpg).",
             "",
             "Best regards,",
-            "Cost Analysis Agent"
+            "Fuel Price Analysis Agent"
         ])
 
-        return "\n".join(report_lines)
+        return "\n".join(lines)
 
     def _generate_insights(self, trends: dict) -> list[str]:
-        """Generate actionable insights from trend data.
+        """Generate market insights from trend data.
 
         Args:
             trends: Dictionary of trend analysis
@@ -231,38 +313,81 @@ class CostProcessor:
         """
         insights = []
 
-        # Find biggest increases
-        increases = [(cat, data) for cat, data in trends.items()
-                     if cat != 'total' and data['change'] > 5]
-        if increases:
-            biggest = max(increases, key=lambda x: x[1]['change'])
-            insights.append(
-                f"{biggest[0].title()} costs increased by {biggest[1]['change']:.1f}% - "
-                "consider reviewing usage in this area."
-            )
+        all_changes = []
+        for location, loc_data in trends.get('locations', {}).items():
+            for product_name, product in loc_data.get('products', {}).items():
+                if product_name in self.KEY_PRODUCTS:
+                    day_change = product.get('day_change')
+                    if day_change is not None:
+                        all_changes.append((location, product_name, day_change))
 
-        # Find decreases (good news)
-        decreases = [(cat, data) for cat, data in trends.items()
-                     if cat != 'total' and data['change'] < -5]
-        if decreases:
-            biggest_decrease = min(decreases, key=lambda x: x[1]['change'])
-            insights.append(
-                f"{biggest_decrease[0].title()} costs decreased by {abs(biggest_decrease[1]['change']):.1f}% - "
-                "great job optimizing!"
-            )
+        if all_changes:
+            # Find biggest mover
+            biggest_up = max(all_changes, key=lambda x: x[2], default=None)
+            biggest_down = min(all_changes, key=lambda x: x[2], default=None)
 
-        # Overall trend
-        total = trends.get('total', {})
-        if total.get('change', 0) > 10:
-            insights.append(
-                "Overall costs are trending significantly higher than average. "
-                "A cost review is recommended."
-            )
-        elif total.get('change', 0) < -10:
-            insights.append(
-                "Overall costs are well below average - your optimization efforts are paying off!"
-            )
-        else:
-            insights.append("Overall costs are within normal range.")
+            if biggest_up and biggest_up[2] > 0:
+                insights.append(
+                    f"Largest increase: {biggest_up[1]} in {biggest_up[0]} "
+                    f"(+{biggest_up[2]:.2f} cpg)"
+                )
+
+            if biggest_down and biggest_down[2] < 0:
+                insights.append(
+                    f"Largest decrease: {biggest_down[1]} in {biggest_down[0]} "
+                    f"({biggest_down[2]:.2f} cpg)"
+                )
+
+            # Overall market direction
+            avg_change = sum(c[2] for c in all_changes) / len(all_changes)
+            if avg_change > 1:
+                insights.append("Overall market trending HIGHER today.")
+            elif avg_change < -1:
+                insights.append("Overall market trending LOWER today.")
+            else:
+                insights.append("Market relatively stable compared to yesterday.")
+
+        if not insights:
+            insights.append("First report - historical comparison will be available tomorrow.")
 
         return insights
+
+    def generate_slack_summary(self, trends: dict) -> dict:
+        """Generate a summary suitable for Slack notification.
+
+        Args:
+            trends: Dictionary of trend analysis
+
+        Returns:
+            Dictionary with summary data for Slack
+        """
+        summary = {
+            'report_date': trends.get('report_date'),
+            'locations': [],
+            'highlights': []
+        }
+
+        for location, loc_data in trends.get('locations', {}).items():
+            loc_summary = {'name': location, 'products': []}
+
+            for product_name in self.KEY_PRODUCTS[:4]:  # Top 4 products
+                products = loc_data.get('products', {})
+                if product_name in products:
+                    product = products[product_name]
+                    current = product['current']
+                    loc_summary['products'].append({
+                        'name': product_name,
+                        'rack_avg': current.get('rack_avg'),
+                        'change': product.get('day_change'),
+                        'direction': product.get('direction'),
+                    })
+
+            summary['locations'].append(loc_summary)
+
+        summary['highlights'] = self._generate_insights(trends)
+
+        return summary
+
+
+# Backwards compatibility alias
+CostProcessor = FuelPriceProcessor

@@ -1,13 +1,14 @@
-"""Main agent orchestrator for Gmail-Slack cost monitoring."""
+"""Main agent orchestrator for Gmail-Slack OPIS fuel price monitoring."""
 
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Optional
 
 from .gmail_client import GmailClient
 from .slack_client import SlackClient
-from .cost_processor import CostProcessor
+from .cost_processor import FuelPriceProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -17,33 +18,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class CostMonitorAgent:
-    """Agent that monitors Gmail for cost data and sends Slack notifications."""
+class OPISMonitorAgent:
+    """Agent that monitors Gmail for OPIS fuel pricing data and sends Slack notifications."""
 
     def __init__(
         self,
         gmail_credentials_path: str,
         slack_bot_token: str,
         slack_channel: str,
-        subject_pattern: str = r'Cost Data|Cost Report|Daily Costs',
-        watch_sender: Optional[str] = None,
-        poll_interval: int = 60
+        subject_pattern: str = r'OPIS Wholesale|OPIS Spot',
+        watch_sender: Optional[str] = 'opisadmin@opisnet.com',
+        poll_interval: int = 60,
+        history_file: str = 'price_history.json'
     ):
-        """Initialize the cost monitor agent.
+        """Initialize the OPIS monitor agent.
 
         Args:
             gmail_credentials_path: Path to Google OAuth credentials JSON
             slack_bot_token: Slack bot OAuth token
             slack_channel: Slack channel ID for notifications
-            subject_pattern: Regex pattern to match cost email subjects
-            watch_sender: Optional sender email to filter by
+            subject_pattern: Regex pattern to match OPIS email subjects
+            watch_sender: Sender email to filter by (default: opisadmin@opisnet.com)
             poll_interval: Seconds between email checks
+            history_file: Path to JSON file for storing price history
         """
-        logger.info("Initializing Cost Monitor Agent...")
+        logger.info("Initializing OPIS Fuel Price Monitor Agent...")
 
         self.gmail = GmailClient(credentials_path=gmail_credentials_path)
         self.slack = SlackClient(bot_token=slack_bot_token, default_channel=slack_channel)
-        self.cost_processor = CostProcessor()
+        self.price_processor = FuelPriceProcessor(history_file=history_file)
 
         self.subject_pattern = subject_pattern
         self.watch_sender = watch_sender
@@ -55,13 +58,15 @@ class CostMonitorAgent:
         logger.info("Agent initialized successfully")
 
     def process_email(self, email: dict) -> None:
-        """Process a single cost data email.
+        """Process an OPIS pricing email.
 
         This method:
-        1. Sends a Slack notification about the received email
-        2. Parses cost data from the email
-        3. Calculates trends
-        4. Sends a reply to the customer with the trend report
+        1. Parses OPIS data from the email
+        2. Sends a Slack notification about the received email
+        3. Calculates price trends
+        4. Updates price history
+        5. Sends trend summary to Slack
+        6. Sends a reply to the customer with the trend report
 
         Args:
             email: Email dictionary from GmailClient
@@ -71,40 +76,59 @@ class CostMonitorAgent:
         sender = email['sender']
         received_at = email['date']
 
-        logger.info(f"Processing email: {subject} from {sender}")
+        logger.info(f"Processing OPIS email: {subject} from {sender}")
 
-        # Step 1: Send Slack notification
+        # Step 1: Parse OPIS data from email
         try:
-            self.slack.send_cost_alert(
+            opis_data = self.price_processor.parse_opis_email(email['body'])
+            logger.info(f"Parsed OPIS data for {len(opis_data.locations)} location(s): {opis_data.locations}")
+            logger.info(f"Report date: {opis_data.report_date}")
+            logger.info(f"Found {len(opis_data.products)} product sections")
+        except Exception as e:
+            logger.error(f"Failed to parse OPIS data: {e}")
+            return
+
+        # Step 2: Send Slack notification about receipt
+        try:
+            self.slack.send_opis_alert(
                 sender=sender,
                 subject=subject,
-                received_at=received_at
+                received_at=received_at,
+                report_date=opis_data.report_date or "Unknown",
+                locations=opis_data.locations
             )
             logger.info("Slack notification sent successfully")
         except Exception as e:
             logger.error(f"Failed to send Slack notification: {e}")
 
-        # Step 2: Parse cost data from email
-        costs = self.cost_processor.parse_cost_email(email['body'])
-        logger.info(f"Parsed costs: {costs}")
-
         # Step 3: Calculate trends
-        trends = self.cost_processor.calculate_trends(costs)
-        logger.info(f"Calculated trends: {trends}")
-
-        # Step 4: Send trend summary to Slack
         try:
-            self.slack.send_trend_summary(trends)
-            logger.info("Trend summary sent to Slack")
+            trends = self.price_processor.calculate_trends(opis_data)
+            logger.info("Price trends calculated")
+        except Exception as e:
+            logger.error(f"Failed to calculate trends: {e}")
+            trends = {'report_date': opis_data.report_date, 'locations': {}}
+
+        # Step 4: Update price history for future trend analysis
+        try:
+            self.price_processor.update_history(opis_data)
+            logger.info("Price history updated")
+        except Exception as e:
+            logger.error(f"Failed to update price history: {e}")
+
+        # Step 5: Send trend summary to Slack
+        try:
+            slack_summary = self.price_processor.generate_slack_summary(trends)
+            self.slack.send_fuel_price_summary(slack_summary)
+            logger.info("Fuel price summary sent to Slack")
         except Exception as e:
             logger.error(f"Failed to send trend summary: {e}")
 
-        # Step 5: Generate and send reply email
+        # Step 6: Generate and send reply email
         try:
-            trend_report = self.cost_processor.generate_trend_report(trends)
+            trend_report = self.price_processor.generate_trend_report(trends)
 
             # Extract sender email address (handle "Name <email>" format)
-            import re
             email_match = re.search(r'<(.+?)>', sender)
             reply_to = email_match.group(1) if email_match else sender
 
@@ -118,7 +142,7 @@ class CostMonitorAgent:
         except Exception as e:
             logger.error(f"Failed to send reply: {e}")
 
-        # Step 6: Mark email as read
+        # Step 7: Mark email as read
         try:
             self.gmail.mark_as_read(email_id)
             logger.info("Email marked as read")
@@ -129,12 +153,12 @@ class CostMonitorAgent:
         self._processed_emails.add(email_id)
 
     def check_for_emails(self) -> list[dict]:
-        """Check for new cost data emails.
+        """Check for new OPIS pricing emails.
 
         Returns:
             List of new unprocessed emails matching criteria
         """
-        logger.debug("Checking for new emails...")
+        logger.debug("Checking for new OPIS emails...")
 
         emails = self.gmail.get_unread_emails(
             subject_pattern=self.subject_pattern,
@@ -145,7 +169,7 @@ class CostMonitorAgent:
         new_emails = [e for e in emails if e['id'] not in self._processed_emails]
 
         if new_emails:
-            logger.info(f"Found {len(new_emails)} new email(s)")
+            logger.info(f"Found {len(new_emails)} new OPIS email(s)")
 
         return new_emails
 
@@ -171,7 +195,7 @@ class CostMonitorAgent:
         This method runs indefinitely, checking for new emails
         at the configured poll interval.
         """
-        logger.info(f"Starting agent... polling every {self.poll_interval} seconds")
+        logger.info(f"Starting OPIS Monitor Agent... polling every {self.poll_interval} seconds")
         logger.info(f"Watching for emails with subject matching: {self.subject_pattern}")
         if self.watch_sender:
             logger.info(f"Filtering by sender: {self.watch_sender}")
@@ -181,7 +205,7 @@ class CostMonitorAgent:
                 try:
                     processed = self.run_once()
                     if processed:
-                        logger.info(f"Processed {processed} email(s)")
+                        logger.info(f"Processed {processed} OPIS email(s)")
                 except Exception as e:
                     logger.error(f"Error in polling cycle: {e}")
 
@@ -189,3 +213,7 @@ class CostMonitorAgent:
 
         except KeyboardInterrupt:
             logger.info("Agent stopped by user")
+
+
+# Backwards compatibility alias
+CostMonitorAgent = OPISMonitorAgent

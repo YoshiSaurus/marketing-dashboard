@@ -31,3 +31,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Price history data
+price_history.json
