@@ -34,3 +34,4 @@ logs/
 
 # Price history data
 price_history.json
+test_price_history.json
