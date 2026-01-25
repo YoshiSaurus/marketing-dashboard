@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Optional
 
 from .gmail_client import GmailClient
-from .slack_client import SlackClient
+from .slack_client import SlackWebhookClient
 from .opis_parser import OPISParser
 from .storage import OPISDataStore, DerivedViews
 from .cost_processor import FuelPriceProcessor
@@ -44,8 +44,7 @@ class OPISMonitorAgent:
     def __init__(
         self,
         gmail_credentials_path: str,
-        slack_bot_token: str,
-        slack_channel: str,
+        slack_webhook_url: str,
         subject_pattern: str = r'OPIS Wholesale|OPIS Spot',
         watch_sender: Optional[str] = 'opisadmin@opisnet.com',
         poll_interval: int = 60,
@@ -56,8 +55,7 @@ class OPISMonitorAgent:
 
         Args:
             gmail_credentials_path: Path to Google OAuth credentials JSON
-            slack_bot_token: Slack bot OAuth token
-            slack_channel: Slack channel ID for notifications
+            slack_webhook_url: Slack incoming webhook URL
             subject_pattern: Regex pattern to match OPIS email subjects
             watch_sender: Sender email to filter by (default: opisadmin@opisnet.com)
             poll_interval: Seconds between email checks
@@ -67,7 +65,7 @@ class OPISMonitorAgent:
         logger.info("Initializing OPIS Fuel Price Monitor Agent...")
 
         self.gmail = GmailClient(credentials_path=gmail_credentials_path)
-        self.slack = SlackClient(bot_token=slack_bot_token, default_channel=slack_channel)
+        self.slack = SlackWebhookClient(webhook_url=slack_webhook_url)
 
         # New data lake architecture
         self.parser = OPISParser()

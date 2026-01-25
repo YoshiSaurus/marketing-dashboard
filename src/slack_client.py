@@ -1,57 +1,65 @@
-"""Slack client for sending fuel pricing notifications."""
+"""Slack client for sending fuel pricing notifications via webhook."""
 
+import json
+import urllib.request
+import urllib.error
 from typing import Optional
 
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 
+class SlackWebhookClient:
+    """Client for sending Slack notifications via incoming webhook.
 
-class SlackClient:
-    """Client for sending Slack notifications."""
+    Webhooks are simpler than bot tokens - just POST to a URL.
+    No OAuth, no channel IDs, no scopes needed.
+    """
 
-    def __init__(self, bot_token: str, default_channel: Optional[str] = None):
-        """Initialize Slack client.
+    def __init__(self, webhook_url: str):
+        """Initialize Slack webhook client.
 
         Args:
-            bot_token: Slack bot OAuth token (xoxb-...)
-            default_channel: Default channel ID for notifications
+            webhook_url: Slack incoming webhook URL
+                        (e.g., https://hooks.slack.com/services/T.../B.../...)
         """
-        self.client = WebClient(token=bot_token)
-        self.default_channel = default_channel
+        self.webhook_url = webhook_url
 
-    def send_notification(self, message: str, channel: Optional[str] = None,
-                          blocks: Optional[list] = None) -> dict:
-        """Send a notification message to Slack.
+    def send_notification(self, message: str, blocks: Optional[list] = None) -> dict:
+        """Send a notification message to Slack via webhook.
 
         Args:
             message: Text message to send (used as fallback for blocks)
-            channel: Channel ID to send to (uses default if not specified)
             blocks: Optional Slack Block Kit blocks for rich formatting
 
         Returns:
-            Slack API response
+            Response dict with status
 
         Raises:
-            SlackApiError: If the message fails to send
+            Exception: If the webhook request fails
         """
-        target_channel = channel or self.default_channel
-        if not target_channel:
-            raise ValueError("No channel specified and no default channel set")
+        payload = {"text": message}
+
+        if blocks:
+            payload["blocks"] = blocks
+
+        data = json.dumps(payload).encode('utf-8')
+
+        req = urllib.request.Request(
+            self.webhook_url,
+            data=data,
+            headers={'Content-Type': 'application/json'}
+        )
 
         try:
-            response = self.client.chat_postMessage(
-                channel=target_channel,
-                text=message,
-                blocks=blocks
-            )
-            return response.data
-        except SlackApiError as e:
-            print(f"Slack API error: {e.response['error']}")
+            with urllib.request.urlopen(req) as response:
+                return {"ok": True, "status": response.status}
+        except urllib.error.HTTPError as e:
+            print(f"Slack webhook error: {e.code} - {e.reason}")
+            raise
+        except urllib.error.URLError as e:
+            print(f"Slack webhook connection error: {e.reason}")
             raise
 
     def send_opis_alert(self, sender: str, subject: str, received_at: str,
-                        report_date: str, locations: list[str],
-                        channel: Optional[str] = None) -> dict:
+                        report_date: str, locations: list[str]) -> dict:
         """Send an alert when OPIS pricing data is received.
 
         Args:
@@ -60,10 +68,9 @@ class SlackClient:
             received_at: When the email was received
             report_date: Date of the OPIS report
             locations: List of locations in the report
-            channel: Optional channel override
 
         Returns:
-            Slack API response
+            Response dict
         """
         locations_text = ", ".join(locations) if locations else "Unknown"
 
@@ -117,17 +124,16 @@ class SlackClient:
         ]
 
         message = f"OPIS fuel pricing data received for {report_date} - {locations_text}"
-        return self.send_notification(message, channel, blocks)
+        return self.send_notification(message, blocks)
 
-    def send_fuel_price_summary(self, summary: dict, channel: Optional[str] = None) -> dict:
+    def send_fuel_price_summary(self, summary: dict) -> dict:
         """Send a summary of fuel price trends to Slack.
 
         Args:
             summary: Dictionary from FuelPriceProcessor.generate_slack_summary()
-            channel: Optional channel override
 
         Returns:
-            Slack API response
+            Response dict
         """
         report_date = summary.get('report_date', 'Unknown')
 
@@ -202,73 +208,85 @@ class SlackClient:
         })
 
         message = f"Fuel price trends for {report_date}"
-        return self.send_notification(message, channel, blocks)
+        return self.send_notification(message, blocks)
 
-    # Keep backward compatibility
-    def send_cost_alert(self, sender: str, subject: str, received_at: str,
-                        channel: Optional[str] = None) -> dict:
-        """Send a formatted cost data received alert (legacy method).
-
-        Args:
-            sender: Email sender address
-            subject: Email subject
-            received_at: When the email was received
-            channel: Optional channel override
-
-        Returns:
-            Slack API response
-        """
-        return self.send_opis_alert(
-            sender=sender,
-            subject=subject,
-            received_at=received_at,
-            report_date="See email",
-            locations=[],
-            channel=channel
-        )
-
-    def send_trend_summary(self, trends: dict, channel: Optional[str] = None) -> dict:
-        """Send a summary of trends to Slack (legacy method).
+    def send_ingestion_summary(self, capture_id: str, report_date: str,
+                                locations: list[str], total_rows: int,
+                                vendors: list[str]) -> dict:
+        """Send an ingestion summary to Slack.
 
         Args:
-            trends: Dictionary containing trend data
-            channel: Optional channel override
+            capture_id: Unique capture ID
+            report_date: Date of the OPIS report
+            locations: List of locations
+            total_rows: Total number of rows captured
+            vendors: List of vendor names
 
         Returns:
-            Slack API response
+            Response dict
         """
-        # Convert old format to new format if needed
-        if 'locations' in trends:
-            return self.send_fuel_price_summary(trends, channel)
-
-        # Handle legacy format
-        trend_text = []
-        for category, data in trends.items():
-            if isinstance(data, dict) and 'current' in data:
-                direction = "up" if data.get('change', 0) > 0 else "down"
-                emoji = ":chart_with_upwards_trend:" if direction == "up" else ":chart_with_downwards_trend:"
-                trend_text.append(
-                    f"{emoji} *{category}*: {data.get('current', 0):.2f} cpg "
-                    f"({data.get('change', 0):+.1f}%)"
-                )
+        locations_text = ", ".join(locations) if locations else "Unknown"
+        vendors_text = ", ".join(sorted(vendors)) if vendors else "N/A"
 
         blocks = [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "Daily Price Trends Summary",
+                    "text": "Market Pricing Fully Ingested",
                     "emoji": True
                 }
             },
             {
                 "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Source:*\nOPIS"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Report Date:*\n{report_date}"
+                    }
+                ]
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Records Captured:*\n{total_rows} price rows"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Capture ID:*\n`{capture_id}`"
+                    }
+                ]
+            },
+            {
+                "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "\n".join(trend_text) if trend_text else "No trend data available"
+                    "text": f"*Markets:* {locations_text}\n*Vendors:* {vendors_text}"
                 }
+            },
+            {
+                "type": "divider"
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": ":white_check_mark: All data stored for historical analysis, pricing models, and audit trails"
+                    }
+                ]
             }
         ]
 
-        message = "Daily price trends summary"
-        return self.send_notification(message, channel, blocks)
+        message = f"OPIS pricing data ingested: {total_rows} rows from {locations_text}"
+        return self.send_notification(message, blocks)
+
+
+# Backwards compatibility - alias for old code
+SlackClient = SlackWebhookClient
