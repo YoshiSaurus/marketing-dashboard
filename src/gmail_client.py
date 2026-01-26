@@ -156,7 +156,8 @@ class GmailClient:
 
         return body
 
-    def send_reply(self, thread_id: str, to: str, subject: str, body: str) -> dict:
+    def send_reply(self, thread_id: str, to: str, subject: str, body: str,
+                   cc: Optional[str] = None) -> dict:
         """Send a reply to an email thread.
 
         Args:
@@ -164,6 +165,7 @@ class GmailClient:
             to: Recipient email address
             subject: Email subject (will be prefixed with Re: if not already)
             body: Email body text
+            cc: Optional CC recipient email address
 
         Returns:
             Sent message details
@@ -174,6 +176,8 @@ class GmailClient:
         message = MIMEText(body)
         message['to'] = to
         message['subject'] = subject
+        if cc:
+            message['cc'] = cc
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 

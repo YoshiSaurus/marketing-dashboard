@@ -22,6 +22,8 @@ def main():
     poll_interval = int(os.getenv('POLL_INTERVAL', '60'))
     history_file = os.getenv('PRICE_HISTORY_FILE', 'price_history.json')
     data_path = os.getenv('DATA_PATH', 'data')
+    reply_to_email = os.getenv('REPLY_TO_EMAIL', 'bsims@pakasak.net')
+    cc_email = os.getenv('CC_EMAIL', 'ayush@foliox.ai')
 
     # Validate required configuration
     if not slack_webhook_url:
@@ -42,15 +44,19 @@ def main():
         watch_sender=watch_sender,
         poll_interval=poll_interval,
         history_file=history_file,
-        data_path=data_path
+        data_path=data_path,
+        reply_to_email=reply_to_email,
+        cc_email=cc_email
     )
 
     print("=" * 60)
-    print("OPIS Fuel Price Monitor Agent")
+    print("FOLIOX PRICING AGENT")
     print("=" * 60)
     print(f"  Polling interval: {poll_interval} seconds")
     print(f"  Subject pattern: {subject_pattern}")
     print(f"  Watch sender: {watch_sender or 'All senders'}")
+    print(f"  Reply to: {reply_to_email}")
+    print(f"  CC: {cc_email}")
     print(f"  Data storage: {data_path}/")
     print("=" * 60)
     print("Agent is running. Press Ctrl+C to stop.")

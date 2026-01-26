@@ -49,7 +49,9 @@ class OPISMonitorAgent:
         watch_sender: Optional[str] = 'opisadmin@opisnet.com',
         poll_interval: int = 60,
         history_file: str = 'price_history.json',
-        data_path: str = 'data'
+        data_path: str = 'data',
+        reply_to_email: str = 'bsims@pakasak.net',
+        cc_email: Optional[str] = 'ayush@foliox.ai'
     ):
         """Initialize the OPIS monitor agent.
 
@@ -61,6 +63,8 @@ class OPISMonitorAgent:
             poll_interval: Seconds between email checks
             history_file: Path to JSON file for legacy price history
             data_path: Base path for data lake storage
+            reply_to_email: Email address to send replies to
+            cc_email: Email address to CC on replies
         """
         logger.info("Initializing OPIS Fuel Price Monitor Agent...")
 
@@ -78,6 +82,8 @@ class OPISMonitorAgent:
         self.subject_pattern = subject_pattern
         self.watch_sender = watch_sender
         self.poll_interval = poll_interval
+        self.reply_to_email = reply_to_email
+        self.cc_email = cc_email
 
         # Track processed emails to avoid duplicates
         self._processed_emails: set[str] = set()
@@ -197,17 +203,14 @@ class OPISMonitorAgent:
                 extracted_rows=extracted_rows
             )
 
-            # Extract sender email address
-            email_match = re.search(r'<(.+?)>', sender)
-            reply_to = email_match.group(1) if email_match else sender
-
             self.gmail.send_reply(
                 thread_id=email['thread_id'],
-                to=reply_to,
+                to=self.reply_to_email,
                 subject=subject,
-                body=reply_body
+                body=reply_body,
+                cc=self.cc_email
             )
-            logger.info(f"Reply sent to {reply_to}")
+            logger.info(f"Reply sent to {self.reply_to_email} (CC: {self.cc_email})")
 
         except Exception as e:
             logger.error(f"Failed to send reply: {e}")
@@ -234,6 +237,7 @@ class OPISMonitorAgent:
         """Generate customer reply with explicit ingestion summary.
 
         Sets trust + clarity by being explicit about what was captured.
+        Uses Foliox platform branding for agentic feel.
         """
         report_date = opis_data.report_date or datetime.now().strftime('%Y-%m-%d')
         locations = ', '.join(opis_data.locations) if opis_data.locations else 'Unknown'
@@ -252,29 +256,39 @@ class OPISMonitorAgent:
 
         lines = [
             "=" * 60,
-            "MARKET PRICING FULLY INGESTED",
+            "FOLIOX PRICING AGENT - INGESTION COMPLETE",
             "=" * 60,
             "",
-            f"Source: OPIS (Oil Price Information Service)",
-            f"Report Date: {report_date}",
-            f"Account: #{opis_data.account_number or 'N/A'}",
-            f"Capture ID: {capture_id}",
+            "Hi,",
             "",
+            "I've successfully captured and processed the latest OPIS market",
+            "pricing data. Here's what I ingested:",
+            "",
+            "-" * 40,
             "INGESTION SUMMARY",
             "-" * 40,
+            f"  Source: OPIS (Oil Price Information Service)",
+            f"  Report Date: {report_date}",
+            f"  Account: #{opis_data.account_number or 'N/A'}",
+            f"  Capture ID: {capture_id}",
+            "",
             f"  Records captured: {total_rows} price rows",
             f"  Markets: {locations}",
             f"  Product sections: {len(products)}",
             f"  Vendors: {', '.join(sorted(vendors)) if vendors else 'N/A'}",
             "",
-            "All market data has been stored for:",
-            "  - Historical analysis",
-            "  - Pricing models",
-            "  - Benchmark comparisons",
-            "  - Audit trails",
+            "-" * 40,
+            "FOLIOX PLATFORM STATUS",
+            "-" * 40,
             "",
-            "LICENSE NOTICE: This data is for internal use only.",
-            "Source attribution: Oil Price Information Service (OPIS)",
+            "This pricing data has been captured in your Foliox platform",
+            "and is now available for:",
+            "",
+            "  * Historical trend analysis",
+            "  * Automated pricing model updates",
+            "  * Benchmark comparisons across vendors",
+            "  * Margin and cost optimization",
+            "  * Audit trails and compliance reporting",
             "",
             "=" * 60,
             "",
@@ -287,8 +301,20 @@ class OPISMonitorAgent:
         lines.extend([
             "",
             "-" * 60,
+            "NEXT STEPS",
+            "-" * 60,
             "No pricing has been applied to contracts or dispatch by default.",
-            "Contact your administrator for pricing model configuration.",
+            "I'll continue monitoring for new OPIS updates and will notify",
+            "you as soon as new pricing data is available.",
+            "",
+            "If you need to adjust pricing models or run specific analyses,",
+            "please let your administrator know.",
+            "",
+            "-" * 60,
+            "LICENSE NOTICE: OPIS data is for internal use only.",
+            "Source: Oil Price Information Service (OPIS)",
+            "",
+            "-- Foliox Pricing Agent",
         ])
 
         return '\n'.join(lines)
