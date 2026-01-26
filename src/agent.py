@@ -295,6 +295,8 @@ class OPISMonitorAgent:
         ]
 
         # Add trend report
+        lines.append("PRICING TRENDS (from your Foliox platform)")
+        lines.append("-" * 40)
         trend_report = self.price_processor.generate_trend_report(trends)
         lines.append(trend_report)
 
