@@ -65,12 +65,14 @@ class ExtractedRow:
 
     # Product context (preserved as-is from email)
     product_group: str  # "GROSS CONV. CLEAR", "GROSS CBOB ETHANOL(10%)"
-    product_variant: Optional[str] = None
-    rvp: Optional[str] = None  # "9.0" etc
 
     # Row identification
     row_type: str  # "vendor", "summary", "spot", "retail"
     row_label: str  # "Valero", "LOW RACK", "RACK AVG", "FOB AMARILLO"
+
+    # Optional fields (must come after required fields)
+    product_variant: Optional[str] = None
+    rvp: Optional[str] = None  # "9.0" etc
 
     # Vendor-specific (if row_type == "vendor")
     vendor: Optional[str] = None
