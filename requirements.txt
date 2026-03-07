@@ -15,5 +15,9 @@ schedule==1.2.1
 # Date/time utilities
 python-dateutil==2.8.2
 
-# Document Scanner Bot (Flask server for Slack events)
+# Document Scanner Bot + Marketing Agent (Flask server for Slack events)
 flask==3.0.0
+
+# AI Marketing Lead Agent - no additional dependencies required
+# Uses stdlib urllib for HTTP, Claude API for content generation,
+# Gemini/Banana APIs for image generation (all via REST)

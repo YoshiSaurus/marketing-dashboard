@@ -38,3 +38,7 @@ test_price_history.json
 
 # Data lake storage
 data/
+
+# Marketing agent output
+marketing_output/
+generated_images/
