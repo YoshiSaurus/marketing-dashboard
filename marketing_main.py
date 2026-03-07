@@ -40,7 +40,7 @@ def main():
         anthropic_api_key=anthropic_key,
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         banana_api_key=os.getenv("BANANA_API_KEY"),
-        google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
+        google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY") or os.getenv("GEMINI_API_KEY"),
         google_search_cx=os.getenv("GOOGLE_SEARCH_CX"),
         slack_webhook_url=slack_webhook,
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN"),
