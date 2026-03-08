@@ -170,7 +170,7 @@ class ImageGenerator:
     def _generate_with_gemini(
         self, prompt: str, suggestion_id: str
     ) -> Optional[GeneratedImage]:
-        """Generate image using Google Gemini Imagen API.
+        """Generate image using Google Imagen 3 API.
 
         Args:
             prompt: Image generation prompt
@@ -179,18 +179,13 @@ class ImageGenerator:
         Returns:
             GeneratedImage or None
         """
+        # Use Imagen 3 model for image generation
         payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}],
-                    "role": "user",
-                }
-            ],
-            "generationConfig": {
-                "responseModalities": ["image", "text"],
-                "imageSizeOptions": {
-                    "aspectRatio": "16:9",
-                },
+            "instances": [{"prompt": prompt}],
+            "parameters": {
+                "sampleCount": 1,
+                "aspectRatio": "16:9",
+                "personGeneration": "dont_allow",
             },
         }
 
@@ -198,7 +193,7 @@ class ImageGenerator:
 
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash-exp:generateContent?key={self.gemini_api_key}"
+            f"imagen-3.0-generate-002:predict?key={self.gemini_api_key}"
         )
 
         req = urllib.request.Request(
@@ -208,43 +203,46 @@ class ImageGenerator:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with urllib.request.urlopen(req, timeout=90) as response:
                 result = json.loads(response.read().decode("utf-8"))
 
-            # Extract image from response
-            candidates = result.get("candidates", [])
-            if not candidates:
-                logger.error("No candidates in Gemini response")
+            # Extract image from Imagen response
+            predictions = result.get("predictions", [])
+            if not predictions:
+                logger.error("No predictions in Imagen response")
                 return None
 
-            parts = candidates[0].get("content", {}).get("parts", [])
-            for part in parts:
-                inline_data = part.get("inlineData")
-                if inline_data and inline_data.get("mimeType", "").startswith("image/"):
-                    image_bytes = base64.b64decode(inline_data["data"])
-                    mime = inline_data["mimeType"]
-                    ext = "png" if "png" in mime else "jpg"
+            image_b64 = predictions[0].get("bytesBase64Encoded")
+            mime_type = predictions[0].get("mimeType", "image/png")
 
-                    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                    filename = f"gemini_{suggestion_id}_{timestamp}.{ext}"
-                    filepath = os.path.join(self.output_dir, filename)
+            if not image_b64:
+                logger.error("No image data in Imagen response")
+                return None
 
-                    with open(filepath, "wb") as f:
-                        f.write(image_bytes)
+            image_bytes = base64.b64decode(image_b64)
+            ext = "png" if "png" in mime_type else "jpg"
 
-                    logger.info(f"Gemini image generated: {filepath}")
-                    return GeneratedImage(
-                        file_path=filepath,
-                        prompt=prompt,
-                        generator="gemini",
-                        created_at=datetime.now().isoformat(),
-                    )
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            filename = f"gemini_{suggestion_id}_{timestamp}.{ext}"
+            filepath = os.path.join(self.output_dir, filename)
 
-            logger.warning("No image found in Gemini response")
+            with open(filepath, "wb") as f:
+                f.write(image_bytes)
+
+            logger.info(f"Imagen 3 image generated: {filepath}")
+            return GeneratedImage(
+                file_path=filepath,
+                prompt=prompt,
+                generator="gemini",
+                created_at=datetime.now().isoformat(),
+            )
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8") if e.fp else ""
+            logger.error(f"Imagen API error: {e} - {body[:200]}")
             return None
-
-        except (urllib.error.HTTPError, urllib.error.URLError) as e:
-            logger.error(f"Gemini API error: {e}")
+        except urllib.error.URLError as e:
+            logger.error(f"Imagen API connection error: {e}")
             return None
 
     def _generate_with_banana(

@@ -40,6 +40,61 @@ def create_marketing_app(agent):
             "published": len(agent._published),
         })
 
+    # ---- Analytics API for Vercel Dashboard ----
+
+    @app.route("/api/dashboard", methods=["GET"])
+    def dashboard_summary():
+        """Dashboard summary stats."""
+        data = agent.analytics.get_dashboard_summary()
+        return jsonify(data)
+
+    @app.route("/api/posts", methods=["GET"])
+    def recent_posts():
+        """Recent published posts with engagement."""
+        limit = request.args.get("limit", 20, type=int)
+        data = agent.analytics.get_recent_posts(limit=limit)
+        return jsonify(data)
+
+    @app.route("/api/categories", methods=["GET"])
+    def category_performance():
+        """Performance by content category."""
+        data = agent.analytics.get_category_performance()
+        return jsonify(data)
+
+    @app.route("/api/platforms", methods=["GET"])
+    def platform_stats():
+        """Stats by platform."""
+        data = agent.analytics.get_platform_stats()
+        return jsonify(data)
+
+    @app.route("/api/timeline", methods=["GET"])
+    def timeline():
+        """Timeline data for charts."""
+        days = request.args.get("days", 30, type=int)
+        data = agent.analytics.get_timeline_data(days=days)
+        return jsonify(data)
+
+    @app.route("/api/suggestions", methods=["GET"])
+    def all_suggestions():
+        """All suggestions with status."""
+        limit = request.args.get("limit", 50, type=int)
+        data = agent.analytics.get_all_suggestions(limit=limit)
+        return jsonify(data)
+
+    @app.route("/api/posts-by-category", methods=["GET"])
+    def posts_by_category():
+        """Posts grouped by category and platform."""
+        data = agent.analytics.get_posts_by_category()
+        return jsonify(data)
+
+    # Enable CORS for dashboard
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
+
     @app.route("/slack/interactions", methods=["POST"])
     def handle_interaction():
         """Handle Slack interactive component payloads (button clicks)."""

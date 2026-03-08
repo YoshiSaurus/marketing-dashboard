@@ -6,6 +6,7 @@ of news and AI for the fuel marketing and distribution industry.
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
@@ -54,18 +55,60 @@ class ContentSuggestion:
     approval_status: str = "pending"  # pending, approved, rejected
     approved_by: Optional[str] = None
     slack_message_ts: Optional[str] = None
+    twitter_post: Optional[TwitterPost] = None
+    content_category: str = ""  # e.g. "ai_pricing", "fuel_distribution", "cx_innovation"
+
+
+@dataclass
+class TwitterPost:
+    """A generated X.com (Twitter) post."""
+    text: str
+    hashtags: list[str]
+    source_articles: list[str]
+    post_type: str = "thought_leadership"  # thought_leadership, news_commentary, tip
+    status: str = "draft"
 
 
 class ContentGenerator:
-    """Generates blog ideas and LinkedIn posts from news articles using AI."""
+    """Generates blog ideas, LinkedIn posts, and X.com posts from news articles using AI."""
 
-    def __init__(self, anthropic_api_key: str):
+    def __init__(self, anthropic_api_key: str, knowledge_base_path: Optional[str] = None):
         """Initialize the content generator.
 
         Args:
             anthropic_api_key: Anthropic API key for Claude
+            knowledge_base_path: Path to knowledge base file for content alignment
         """
         self.api_key = anthropic_api_key
+        self.knowledge_base = self._load_knowledge_base(knowledge_base_path)
+
+    def _load_knowledge_base(self, path: Optional[str]) -> str:
+        """Load knowledge base content from file.
+
+        Args:
+            path: Path to knowledge base file (.md or .txt)
+
+        Returns:
+            Knowledge base content string, or empty string if not found
+        """
+        if not path:
+            # Try default locations
+            for default_path in ["knowledge_base.md", "knowledge_base.txt"]:
+                if os.path.exists(default_path):
+                    path = default_path
+                    break
+            if not path:
+                return ""
+
+        try:
+            with open(path, "r") as f:
+                content = f.read().strip()
+            if content:
+                logger.info(f"Knowledge base loaded from {path} ({len(content)} chars)")
+            return content
+        except (FileNotFoundError, PermissionError) as e:
+            logger.warning(f"Could not load knowledge base from {path}: {e}")
+            return ""
 
     def generate_content_suggestions(
         self, articles: list[NewsArticle], num_suggestions: int = 3
@@ -142,17 +185,28 @@ class ContentGenerator:
 
         variation = variation_prompts[suggestion_index % len(variation_prompts)]
 
+        knowledge_base_section = ""
+        if self.knowledge_base:
+            knowledge_base_section = f"""
+BRAND KNOWLEDGE BASE (use this to align all content with our core themes and messaging):
+---
+{self.knowledge_base}
+---
+
+"""
+
         prompt = f"""You are a content strategist for Foliox, an AI platform for fuel marketing and distribution.
 
 Based on these recent industry news articles, generate ONE content suggestion that connects current news with AI applications in the fuel marketing and distribution industry.
 
 {variation}
-
+{knowledge_base_section}
 RECENT NEWS ARTICLES:
 {article_summaries}
 
 Generate a JSON response with this exact structure:
 {{
+    "content_category": "One of: ai_pricing, fuel_distribution, cx_innovation, fleet_management, supply_chain, market_intelligence, sustainability, general",
     "blog": {{
         "title": "Compelling blog title (60-80 chars)",
         "hook": "Opening paragraph hook (2-3 sentences that grab attention)",
@@ -166,6 +220,12 @@ Generate a JSON response with this exact structure:
         "text": "LinkedIn post text (150-250 words, conversational, thought-leadership style. Include line breaks for readability. Do NOT include hashtags in the text.)",
         "hashtags": ["#FuelMarketing", "#AIinEnergy", "#tag3", "#tag4", "#tag5"],
         "call_to_action": "What you want readers to do",
+        "source_article_indices": [1]
+    }},
+    "twitter": {{
+        "text": "X.com post (max 280 chars, punchy, thought-provoking. No hashtags in main text. Should stand alone as a compelling take.)",
+        "hashtags": ["#FuelTech", "#AI"],
+        "post_type": "One of: thought_leadership, news_commentary, tip, question",
         "source_article_indices": [1]
     }},
     "image_prompt": "A detailed prompt for generating an image that represents the intersection of AI and fuel marketing for this specific topic. Be specific about visual elements, style, and mood. The image should be professional and suitable for both blog and LinkedIn."
@@ -194,6 +254,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown formatting or code blocks."""
 
         blog_data = data.get("blog", {})
         linkedin_data = data.get("linkedin", {})
+        twitter_data = data.get("twitter", {})
 
         # Map source article indices to URLs
         blog_sources = []
@@ -206,11 +267,17 @@ IMPORTANT: Return ONLY valid JSON, no markdown formatting or code blocks."""
             if 0 < idx <= len(articles):
                 linkedin_sources.append(articles[idx - 1].url)
 
+        twitter_sources = []
+        for idx in twitter_data.get("source_article_indices", []):
+            if 0 < idx <= len(articles):
+                twitter_sources.append(articles[idx - 1].url)
+
         # Get the source articles referenced
         source_articles_used = []
         all_indices = set(
             blog_data.get("source_article_indices", [])
             + linkedin_data.get("source_article_indices", [])
+            + twitter_data.get("source_article_indices", [])
         )
         for idx in all_indices:
             if 0 < idx <= len(articles):
@@ -234,6 +301,15 @@ IMPORTANT: Return ONLY valid JSON, no markdown formatting or code blocks."""
             image_prompt=data.get("image_prompt", ""),
         )
 
+        twitter_post = None
+        if twitter_data:
+            twitter_post = TwitterPost(
+                text=twitter_data.get("text", "")[:280],
+                hashtags=twitter_data.get("hashtags", []),
+                source_articles=twitter_sources,
+                post_type=twitter_data.get("post_type", "thought_leadership"),
+            )
+
         suggestion_id = f"cs-{datetime.now().strftime('%Y%m%d%H%M%S')}-{suggestion_index}"
 
         return ContentSuggestion(
@@ -243,6 +319,8 @@ IMPORTANT: Return ONLY valid JSON, no markdown formatting or code blocks."""
             linkedin_post=linkedin_post,
             source_articles=source_articles_used,
             image_prompt=data.get("image_prompt", ""),
+            twitter_post=twitter_post,
+            content_category=data.get("content_category", "general"),
         )
 
     def generate_full_blog_post(self, blog_idea: BlogIdea) -> str:

@@ -133,13 +133,13 @@ class SlackMarketingClient:
                 ],
             },
             {"type": "divider"},
-            # LinkedIn Post Section
+            # LinkedIn Post Section (manual posting - copy/paste)
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"*LINKEDIN POST*\n\n"
+                        f"*LINKEDIN POST* _(copy for manual posting)_\n\n"
                         f"{linkedin.text[:500]}{'...' if len(linkedin.text) > 500 else ''}"
                     ),
                 },
@@ -151,6 +151,25 @@ class SlackMarketingClient:
                     "text": f"*Hashtags:* {' '.join(linkedin.hashtags)}",
                 },
             },
+            {"type": "divider"},
+            # X.com (Twitter) Post Section
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*X.COM POST* _(copy for manual posting)_\n\n"
+                        f"{getattr(suggestion, 'twitter_post', None) and suggestion.twitter_post.text or '_No X.com post generated_'}"
+                    ),
+                },
+            },
+            *([{
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": f"*Type:* {suggestion.twitter_post.post_type} | *Tags:* {' '.join(suggestion.twitter_post.hashtags)}",
+                }],
+            }] if getattr(suggestion, 'twitter_post', None) else []),
             {"type": "divider"},
             # Source articles
             {
@@ -179,6 +198,14 @@ class SlackMarketingClient:
                 ],
             },
             {"type": "divider"},
+            # Category tag
+            *([{
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": f"*Category:* `{getattr(suggestion, 'content_category', 'general')}`",
+                }],
+            }] if getattr(suggestion, 'content_category', '') else []),
             # Approval actions
             {
                 "type": "actions",
@@ -186,21 +213,9 @@ class SlackMarketingClient:
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "Approve All"},
+                        "text": {"type": "plain_text", "text": "Publish Blog"},
                         "style": "primary",
-                        "action_id": "approve_all",
-                        "value": suggestion.id,
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Blog Only"},
                         "action_id": "approve_blog",
-                        "value": suggestion.id,
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "LinkedIn Only"},
-                        "action_id": "approve_linkedin",
                         "value": suggestion.id,
                     },
                     {
@@ -220,7 +235,8 @@ class SlackMarketingClient:
                         "type": "mrkdwn",
                         "text": (
                             "Reply with images to include them in the post. "
-                            "Click a button above to approve or reject this suggestion."
+                            "Click a button to publish to blog. "
+                            "Copy LinkedIn/X.com text above for manual posting."
                         ),
                     }
                 ],

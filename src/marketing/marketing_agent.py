@@ -21,6 +21,7 @@ from .content_generator import ContentGenerator, ContentSuggestion
 from .image_generator import ImageGenerator, GeneratedImage
 from .slack_marketing import SlackMarketingClient, ApprovalAction
 from .publisher import WebsitePublisher, LinkedInPublisher, PublishResult
+from .analytics_db import AnalyticsDB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +92,7 @@ class MarketingAgent:
 
         self.content_generator = ContentGenerator(
             anthropic_api_key=anthropic_api_key,
+            knowledge_base_path=os.environ.get("KNOWLEDGE_BASE_PATH"),
         )
 
         self.image_generator = ImageGenerator(
@@ -124,6 +126,10 @@ class MarketingAgent:
         self.num_suggestions = num_suggestions
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+
+        # Analytics database
+        db_path = os.path.join(output_dir, "marketing_analytics.db")
+        self.analytics = AnalyticsDB(db_path=db_path)
 
         # Track pending suggestions
         self._pending: dict[str, PendingSuggestion] = {}
@@ -208,8 +214,19 @@ class MarketingAgent:
 
             logger.info(f"Suggestion {suggestion.id} posted to Slack")
 
-        # Save suggestions to disk
+        # Save suggestions to disk and database
         self._save_suggestions(suggestions)
+        for suggestion in suggestions:
+            try:
+                self.analytics.record_suggestion(suggestion)
+            except Exception as e:
+                logger.error(f"Failed to record suggestion in analytics: {e}")
+
+        self.analytics.record_scan_cycle(
+            articles_found=scan_result.total_found,
+            suggestions_generated=len(suggestions),
+            sources_scanned=scan_result.sources_scanned,
+        )
 
         logger.info(f"Scan cycle complete. {len(suggestions)} suggestions posted to Slack.")
         return suggestions
@@ -237,6 +254,12 @@ class MarketingAgent:
             "approved" if approval.action != "reject" else "rejected"
         )
         pending.suggestion.approved_by = approval.user_name
+
+        # Record in analytics
+        try:
+            self.analytics.record_approval(suggestion_id, approval.action, approval.user_name)
+        except Exception as e:
+            logger.error(f"Failed to record approval in analytics: {e}")
 
         # Post update to Slack
         self.slack.post_approval_update(
@@ -273,23 +296,17 @@ class MarketingAgent:
         elif pending.generated_image:
             image_path = pending.generated_image.file_path
 
-        # Publish based on action
+        # Publish based on action (LinkedIn is manual-only now)
         blog_url = None
-        linkedin_url = None
 
         if approval.action in ("approve_all", "approve_blog"):
             blog_url = self._publish_blog(pending.suggestion, image_path)
-
-        if approval.action in ("approve_all", "approve_linkedin"):
-            linkedin_url = self._publish_linkedin(
-                pending.suggestion, image_path, blog_url
-            )
 
         # Post publishing status to Slack
         self.slack.post_publishing_status(
             suggestion_id=suggestion_id,
             blog_url=blog_url,
-            linkedin_url=linkedin_url,
+            linkedin_url=None,
         )
 
         self._published.append(suggestion_id)
@@ -331,6 +348,20 @@ class MarketingAgent:
 
         if result.success:
             logger.info(f"Blog published: {result.url}")
+            try:
+                self.analytics.record_published_post(
+                    suggestion_id=suggestion.id,
+                    platform="website",
+                    post_type="blog",
+                    content_category=getattr(suggestion, 'content_category', 'general'),
+                    title=suggestion.blog_idea.title,
+                    content_preview=suggestion.blog_idea.hook,
+                    url=result.url,
+                    post_id=result.post_id,
+                    image_used=image_path is not None,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record published post in analytics: {e}")
             return result.url
         else:
             logger.error(f"Blog publish failed: {result.error}")
@@ -387,9 +418,19 @@ class MarketingAgent:
 
         for suggestion in suggestions:
             filepath = os.path.join(suggestions_dir, f"{suggestion.id}.json")
+            twitter_data = None
+            if suggestion.twitter_post:
+                twitter_data = {
+                    "text": suggestion.twitter_post.text,
+                    "hashtags": suggestion.twitter_post.hashtags,
+                    "post_type": suggestion.twitter_post.post_type,
+                    "source_articles": suggestion.twitter_post.source_articles,
+                }
+
             data = {
                 "id": suggestion.id,
                 "created_at": suggestion.created_at,
+                "content_category": suggestion.content_category,
                 "blog_idea": {
                     "title": suggestion.blog_idea.title,
                     "hook": suggestion.blog_idea.hook,
@@ -405,6 +446,7 @@ class MarketingAgent:
                     "call_to_action": suggestion.linkedin_post.call_to_action,
                     "source_articles": suggestion.linkedin_post.source_articles,
                 },
+                "twitter_post": twitter_data,
                 "image_prompt": suggestion.image_prompt,
                 "source_articles": [
                     {"title": a.title, "url": a.url, "source": a.source}
