@@ -2,6 +2,9 @@
 
 Scans web sources for convenience store news, fuel distribution news,
 and energy industry developments relevant to AI in fuel marketing.
+
+Uses Gemini API with Google Search grounding (no CX required) as the
+primary search method, with Google News RSS as fallback.
 """
 
 import json
@@ -98,8 +101,8 @@ class NewsScanner:
         """Initialize the news scanner.
 
         Args:
-            google_api_key: Google Custom Search API key (optional, falls back to scraping)
-            google_cx: Google Custom Search Engine ID
+            google_api_key: Gemini / Google API key (used for Gemini grounded search)
+            google_cx: Google Custom Search Engine ID (optional, used if provided)
         """
         self.google_api_key = google_api_key
         self.google_cx = google_cx
@@ -160,37 +163,155 @@ class NewsScanner:
     def _search_news(
         self, query: str, source_name: str, category: str, max_results: int = 5
     ) -> list[NewsArticle]:
-        """Search for news articles using Google Custom Search API.
+        """Search for news articles.
 
-        Args:
-            query: Search query
-            source_name: Name of the news source
-            category: Category tag
-            max_results: Maximum results to return
-
-        Returns:
-            List of NewsArticle objects
+        Tries Gemini grounded search first (no CX needed), then Custom Search
+        if CX is available, then falls back to Google News RSS.
         """
-        if self.google_api_key and self.google_cx:
-            return self._google_custom_search(query, source_name, category, max_results)
-        else:
-            logger.warning("No Google API key configured, using fallback search")
-            return self._fallback_search(query, source_name, category, max_results)
+        if self.google_api_key:
+            articles = self._gemini_grounded_search(query, source_name, category, max_results)
+            if articles:
+                return articles
+            # Fall back to Custom Search if CX is available
+            if self.google_cx:
+                articles = self._google_custom_search(query, source_name, category, max_results)
+                if articles:
+                    return articles
+
+        logger.info("Using RSS fallback search")
+        return self._fallback_search(query, source_name, category, max_results)
+
+    def _gemini_grounded_search(
+        self, query: str, source_name: str, category: str, max_results: int
+    ) -> list[NewsArticle]:
+        """Use Gemini API with Google Search grounding to find news articles.
+
+        This uses Gemini's built-in Google Search tool — no CX required.
+        """
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": (
+                                f"Find {max_results} recent news articles about: {query}\n\n"
+                                "For each article, provide a JSON array with objects containing:\n"
+                                '- "title": article headline\n'
+                                '- "url": full article URL\n'
+                                '- "snippet": 1-2 sentence summary\n'
+                                '- "published_date": publication date if available\n\n'
+                                "Return ONLY a valid JSON array, no other text."
+                            )
+                        }
+                    ],
+                    "role": "user",
+                }
+            ],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {
+                "temperature": 0.1,
+            },
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={self.google_api_key}"
+        )
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            logger.error(f"Gemini grounded search failed: {e}")
+            return []
+
+        # Extract text response and parse JSON
+        candidates = result.get("candidates", [])
+        if not candidates:
+            logger.warning("No candidates in Gemini search response")
+            return []
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        text_response = ""
+        for part in parts:
+            if "text" in part:
+                text_response += part["text"]
+
+        if not text_response:
+            # Try to extract articles from grounding metadata instead
+            grounding = candidates[0].get("groundingMetadata", {})
+            return self._parse_grounding_metadata(grounding, source_name, category, max_results)
+
+        # Parse the JSON response
+        try:
+            cleaned = text_response.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+            articles_data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Gemini search response as JSON, trying grounding metadata")
+            grounding = candidates[0].get("groundingMetadata", {})
+            return self._parse_grounding_metadata(grounding, source_name, category, max_results)
+
+        articles = []
+        if isinstance(articles_data, list):
+            for item in articles_data[:max_results]:
+                if isinstance(item, dict) and item.get("title") and item.get("url"):
+                    articles.append(NewsArticle(
+                        title=item["title"],
+                        url=item["url"],
+                        snippet=item.get("snippet", ""),
+                        source=source_name,
+                        category=category,
+                        published_date=item.get("published_date"),
+                    ))
+
+        logger.info(f"Gemini grounded search found {len(articles)} articles for '{query}'")
+        return articles
+
+    def _parse_grounding_metadata(
+        self, grounding: dict, source_name: str, category: str, max_results: int
+    ) -> list[NewsArticle]:
+        """Extract articles from Gemini grounding metadata (search results)."""
+        articles = []
+        chunks = grounding.get("groundingChunks", [])
+        for chunk in chunks[:max_results]:
+            web = chunk.get("web", {})
+            if web.get("uri") and web.get("title"):
+                articles.append(NewsArticle(
+                    title=web["title"],
+                    url=web["uri"],
+                    snippet="",
+                    source=source_name,
+                    category=category,
+                ))
+
+        support = grounding.get("groundingSupports", [])
+        for s in support:
+            segment = s.get("segment", {})
+            snippet = segment.get("text", "")
+            indices = s.get("groundingChunkIndices", [])
+            for idx in indices:
+                if idx < len(articles) and not articles[idx].snippet:
+                    articles[idx].snippet = snippet[:300]
+
+        return articles
 
     def _google_custom_search(
         self, query: str, source_name: str, category: str, max_results: int
     ) -> list[NewsArticle]:
-        """Use Google Custom Search JSON API.
-
-        Args:
-            query: Search query
-            source_name: Source name for tagging
-            category: Category for the articles
-            max_results: Max results
-
-        Returns:
-            List of NewsArticle
-        """
+        """Use Google Custom Search JSON API."""
         params = urllib.parse.urlencode({
             "key": self.google_api_key,
             "cx": self.google_cx,
@@ -230,20 +351,7 @@ class NewsScanner:
     def _fallback_search(
         self, query: str, source_name: str, category: str, max_results: int
     ) -> list[NewsArticle]:
-        """Fallback search using Google News RSS-style scraping.
-
-        This is used when no API key is configured. It uses the Google News
-        search endpoint to find recent articles.
-
-        Args:
-            query: Search query
-            source_name: Source name
-            category: Category
-            max_results: Max results
-
-        Returns:
-            List of NewsArticle
-        """
+        """Fallback search using Google News RSS."""
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
 
@@ -267,23 +375,10 @@ class NewsScanner:
     def _parse_rss(
         self, rss_content: str, source_name: str, category: str, max_results: int
     ) -> list[NewsArticle]:
-        """Parse RSS XML content into NewsArticle objects.
-
-        Simple XML parsing without external dependencies.
-
-        Args:
-            rss_content: Raw RSS XML string
-            source_name: Source name
-            category: Category
-            max_results: Max articles to extract
-
-        Returns:
-            List of NewsArticle
-        """
+        """Parse RSS XML content into NewsArticle objects."""
         articles = []
 
-        # Simple XML parsing for RSS items
-        items = rss_content.split("<item>")[1:]  # Skip everything before first item
+        items = rss_content.split("<item>")[1:]
 
         for item_xml in items[:max_results]:
             title = self._extract_xml_tag(item_xml, "title")
@@ -292,7 +387,6 @@ class NewsScanner:
             pub_date = self._extract_xml_tag(item_xml, "pubDate")
 
             if title and link:
-                # Clean HTML from description
                 description = self._strip_html(description or "")
 
                 article = NewsArticle(
@@ -315,14 +409,12 @@ class NewsScanner:
         cdata_start = f"<{tag}><![CDATA["
         cdata_end = f"]]></{tag}>"
 
-        # Try CDATA first
         if cdata_start in xml:
             start = xml.find(cdata_start) + len(cdata_start)
             end = xml.find(cdata_end, start)
             if end > start:
                 return xml[start:end]
 
-        # Regular tag
         start = xml.find(start_tag)
         if start == -1:
             return None
@@ -342,11 +434,7 @@ class NewsScanner:
         return clean.strip()
 
     def get_trending_topics(self) -> list[str]:
-        """Get current trending topics in fuel marketing + AI.
-
-        Returns:
-            List of trending topic strings
-        """
+        """Get current trending topics in fuel marketing + AI."""
         return [
             "AI-powered fuel rack pricing optimization",
             "Machine learning for fuel demand forecasting",

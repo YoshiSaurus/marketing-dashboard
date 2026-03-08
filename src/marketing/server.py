@@ -127,7 +127,7 @@ def run_marketing_server(host: str = "0.0.0.0", port: int = 3001):
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),
         banana_api_key=os.environ.get("BANANA_API_KEY"),
-        google_search_api_key=os.environ.get("GOOGLE_SEARCH_API_KEY"),
+        google_search_api_key=os.environ.get("GOOGLE_SEARCH_API_KEY") or os.environ.get("GEMINI_API_KEY"),
         google_search_cx=os.environ.get("GOOGLE_SEARCH_CX"),
         slack_webhook_url=os.environ.get(
             "MARKETING_SLACK_WEBHOOK_URL",
