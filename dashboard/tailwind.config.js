@@ -7,13 +7,13 @@ module.exports = {
     extend: {
       colors: {
         dark: {
-          primary: '#0a0a0f',
-          secondary: '#12121a',
-          card: '#1a1a2e',
-          'card-hover': '#1f1f35',
-          elevated: '#252540',
-          border: '#2a2a45',
-          'border-bright': '#3a3a5c',
+          primary: 'rgb(10 10 15 / <alpha-value>)',
+          secondary: 'rgb(18 18 26 / <alpha-value>)',
+          card: 'rgb(26 26 46 / <alpha-value>)',
+          'card-hover': 'rgb(31 31 53 / <alpha-value>)',
+          elevated: 'rgb(37 37 64 / <alpha-value>)',
+          border: 'rgb(42 42 69 / <alpha-value>)',
+          'border-bright': 'rgb(58 58 92 / <alpha-value>)',
         },
       },
       fontFamily: {

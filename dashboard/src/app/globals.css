@@ -30,10 +30,14 @@
   scrollbar-color: var(--border-bright) transparent;
 }
 
-body {
+html, body {
   color: var(--text-primary);
-  background: var(--bg-primary);
+  background-color: var(--bg-primary) !important;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+html {
+  color-scheme: dark;
 }
 
 /* Glassmorphism card */
